@@ -65,6 +65,11 @@ target_link_libraries(jarvis-windows-helper PRIVATE
   user32
   advapi32)
 
+# <windows.h> defines min and max as macros, which rewrites the std::max/std::min calls in
+# volume_action() into a parse error under clang-cl. NOMINMAX suppresses those macros and
+# keeps the source itself byte-identical to the copy in the JARVIS distribution.
+target_compile_definitions(jarvis-windows-helper PRIVATE NOMINMAX)
+
 # The entry point is wmain, so this must stay a console subsystem application.
 set_target_properties(jarvis-windows-helper PROPERTIES
   OUTPUT_NAME "jarvis-windows-helper"
