@@ -118,6 +118,7 @@ x64版をARM64版として配布しないよう、3段構えで止めます。
 | 設定 | 理由 |
 | --- | --- |
 | `-A ARM64` | ランナー上のネイティブターゲット |
+| `-T ClangCL` | **必須**。ggmlが `MSVC is not supported for ARM, use clang` で構成を拒否するため。VS同梱のClangCLはMSVC ABIを保つので静的CRTとWindows SDKはそのまま使える |
 | `-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded` | 静的CRT。VC++再頒布パッケージ不要の自己完結バイナリにする |
 | `-DBUILD_SHARED_LIBS=OFF` | DLLを持ち回らない |
 | `-DGGML_NATIVE=OFF` | ホスト固有の命令セット検出に依存しない |

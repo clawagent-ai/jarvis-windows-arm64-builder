@@ -87,10 +87,14 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           # -A ARM64 selects the native target on this runner.
+          # -T ClangCL is required, not a preference: ggml/src/ggml-cpu/CMakeLists.txt fails
+          # with "MSVC is not supported for ARM, use clang" unless CMAKE_C_COMPILER_ID is
+          # Clang. The ClangCL toolset shipped with Visual Studio satisfies that check while
+          # keeping the MSVC ABI, so the static CRT and the Windows SDK still work normally.
           # GGML_NATIVE=OFF keeps the build off host-specific instruction detection.
           # OpenMP is disabled so the executables do not depend on vcomp140.dll.
           # Static CRT + static libs make the result self-contained, matching win32-x64.
-          cmake -S whisper.cpp -B whisper-build -A ARM64 `
+          cmake -S whisper.cpp -B whisper-build -A ARM64 -T ClangCL `
             -DCMAKE_POLICY_DEFAULT_CMP0091=NEW `
             -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded `
             -DBUILD_SHARED_LIBS=OFF `
@@ -121,7 +125,9 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          cmake -S build/windows-arm64 -B tools-build -A ARM64 `
+          # Same toolset as whisper.cpp above, so clap-vad links against libraries built
+          # with the compiler they were compiled by.
+          cmake -S build/windows-arm64 -B tools-build -A ARM64 -T ClangCL `
             -DCMAKE_POLICY_DEFAULT_CMP0091=NEW `
             -DWHISPER_INSTALL_DIR="${{ github.workspace }}/whisper-install"
           if ($LASTEXITCODE -ne 0) { throw 'JARVIS native tools configure failed' }
