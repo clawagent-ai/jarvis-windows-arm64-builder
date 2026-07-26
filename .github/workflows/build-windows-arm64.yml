@@ -1,0 +1,215 @@
+name: Build Windows ARM64 native tools
+
+# Produces the three Windows ARM64 native executables that JARVIS cannot build on macOS:
+#   whisper-cli.exe            from whisper.cpp at the commit pinned in whisper-manifest.json
+#   clap-vad.exe               from native/clap-vad.cpp
+#   jarvis-windows-helper.exe  from platform/windows/native/jarvis-windows-helper.cpp
+#
+# This repository holds only the build inputs. No models, no shipped binaries, no JARVIS
+# application code.
+#
+# Every step runs on a real Windows ARM64 runner. The job fails rather than falling back to
+# an x64 runner or an x64 build: shipping an x64 binary as the ARM64 native tool is the exact
+# mistake this workflow exists to prevent.
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - master
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    # Official GitHub-hosted Windows 11 ARM64 runner (public preview, 4 CPU / 8 GB).
+    # The alternative ARM64 label is windows-11-arm. Do not substitute an x64 runner.
+    runs-on: windows-11-vs2026-arm
+
+    steps:
+      - name: Check out the builder
+        uses: actions/checkout@v4
+
+      - name: Confirm the runner is Windows ARM64
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $native = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture
+          $process = [System.Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture
+          Write-Host "PROCESSOR_ARCHITECTURE : $env:PROCESSOR_ARCHITECTURE"
+          Write-Host "OSArchitecture         : $native"
+          Write-Host "ProcessArchitecture    : $process"
+          Write-Host "Runner image           : $env:ImageOS / $env:ImageVersion"
+          if ("$native" -ne 'Arm64') {
+            throw "This workflow requires a Windows ARM64 runner but the OS architecture is '$native'. Not falling back to x64."
+          }
+
+      - name: Read the pinned whisper.cpp version from the manifest
+        id: whisper
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $manifest = Get-Content whisper-manifest.json -Raw | ConvertFrom-Json
+          $commit = $manifest.source.commit
+          $version = $manifest.source.version
+          if ([string]::IsNullOrWhiteSpace($commit)) { throw 'whisper-manifest.json has no source.commit' }
+          Write-Host "whisper.cpp repository : $($manifest.source.repository)"
+          Write-Host "whisper.cpp version    : $version"
+          Write-Host "whisper.cpp commit     : $commit"
+          # The pinned commit is used verbatim so these binaries match the whisper.cpp the
+          # rest of the JARVIS distribution was built against.
+          "commit=$commit"   | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
+      - name: Check out whisper.cpp at the pinned commit
+        uses: actions/checkout@v4
+        with:
+          repository: ggml-org/whisper.cpp
+          ref: ${{ steps.whisper.outputs.commit }}
+          path: whisper.cpp
+          fetch-depth: 0
+
+      - name: Confirm the checked out whisper.cpp commit
+        shell: pwsh
+        working-directory: whisper.cpp
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $actual = (git rev-parse HEAD).Trim()
+          $expected = '${{ steps.whisper.outputs.commit }}'
+          Write-Host "expected: $expected"
+          Write-Host "actual  : $actual"
+          if ($actual -ne $expected) { throw "whisper.cpp commit mismatch: expected $expected, got $actual" }
+
+      - name: Build whisper.cpp for ARM64 and install it
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # -A ARM64 selects the native target on this runner.
+          # GGML_NATIVE=OFF keeps the build off host-specific instruction detection.
+          # OpenMP is disabled so the executables do not depend on vcomp140.dll.
+          # Static CRT + static libs make the result self-contained, matching win32-x64.
+          cmake -S whisper.cpp -B whisper-build -A ARM64 `
+            -DCMAKE_POLICY_DEFAULT_CMP0091=NEW `
+            -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded `
+            -DBUILD_SHARED_LIBS=OFF `
+            -DGGML_NATIVE=OFF `
+            -DGGML_OPENMP=OFF `
+            -DWHISPER_BUILD_TESTS=OFF `
+            -DWHISPER_BUILD_SERVER=OFF `
+            -DWHISPER_BUILD_EXAMPLES=ON `
+            -DCMAKE_INSTALL_PREFIX="${{ github.workspace }}/whisper-install"
+          if ($LASTEXITCODE -ne 0) { throw 'whisper.cpp configure failed' }
+          cmake --build whisper-build --config Release --parallel
+          if ($LASTEXITCODE -ne 0) { throw 'whisper.cpp build failed' }
+          cmake --install whisper-build --config Release
+          if ($LASTEXITCODE -ne 0) { throw 'whisper.cpp install failed' }
+
+      - name: Collect whisper-cli.exe
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Force -Path artifacts | Out-Null
+          $candidate = Get-ChildItem -Path whisper-build, whisper-install -Recurse -Filter whisper-cli.exe -ErrorAction SilentlyContinue |
+            Sort-Object Length -Descending | Select-Object -First 1
+          if (-not $candidate) { throw 'whisper-cli.exe was not produced by the whisper.cpp build' }
+          Write-Host "found: $($candidate.FullName)"
+          Copy-Item $candidate.FullName artifacts/whisper-cli.exe -Force
+
+      - name: Build clap-vad.exe and jarvis-windows-helper.exe for ARM64
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          cmake -S build/windows-arm64 -B tools-build -A ARM64 `
+            -DCMAKE_POLICY_DEFAULT_CMP0091=NEW `
+            -DWHISPER_INSTALL_DIR="${{ github.workspace }}/whisper-install"
+          if ($LASTEXITCODE -ne 0) { throw 'JARVIS native tools configure failed' }
+          cmake --build tools-build --config Release --parallel
+          if ($LASTEXITCODE -ne 0) { throw 'JARVIS native tools build failed' }
+          foreach ($name in 'clap-vad.exe', 'jarvis-windows-helper.exe') {
+            $built = Get-ChildItem -Path tools-build -Recurse -Filter $name |
+              Sort-Object Length -Descending | Select-Object -First 1
+            if (-not $built) { throw "$name was not produced" }
+            Write-Host "found: $($built.FullName)"
+            Copy-Item $built.FullName "artifacts/$name" -Force
+          }
+
+      - name: Verify format, size and SHA-256
+        shell: pwsh
+        run: |
+          # Reads each PE header directly and fails on anything that is not Machine 0xAA64.
+          pwsh -File scripts/Verify-Arm64Artifacts.ps1 -Path artifacts -ReportPath artifacts/BUILD_METADATA.json
+          if ($LASTEXITCODE -ne 0) { throw 'ARM64 verification failed' }
+
+      - name: Launch check with safe read-only commands
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $failures = @()
+
+          # whisper-cli --help prints usage and exits without touching audio or models.
+          $whisperHelp = & artifacts/whisper-cli.exe --help 2>&1 | Out-String
+          Write-Host "--- whisper-cli.exe --help (first lines) ---"
+          Write-Host (($whisperHelp -split "`n" | Select-Object -First 6) -join "`n")
+          if ($whisperHelp -notmatch 'usage|whisper') { $failures += 'whisper-cli.exe --help produced no recognisable usage text' }
+
+          # clap-vad with no arguments prints its usage and returns 2 by design.
+          $clapOutput = & artifacts/clap-vad.exe 2>&1 | Out-String
+          $clapExit = $LASTEXITCODE
+          Write-Host "--- clap-vad.exe (no arguments) ---"
+          Write-Host "exit=$clapExit output=$($clapOutput.Trim())"
+          if ($clapExit -ne 2) { $failures += "clap-vad.exe should exit 2 without arguments, got $clapExit" }
+          if ($clapOutput -notmatch 'usage: clap-vad') { $failures += 'clap-vad.exe did not print its usage line' }
+
+          # The helper returns 2 for argc < 3 before touching audio, windows or processes,
+          # so this proves the image loads and wmain runs without changing machine state.
+          & artifacts/jarvis-windows-helper.exe | Out-Null
+          $helperExit = $LASTEXITCODE
+          Write-Host "--- jarvis-windows-helper.exe (no arguments) ---"
+          Write-Host "exit=$helperExit"
+          if ($helperExit -ne 2) { $failures += "jarvis-windows-helper.exe should exit 2 without arguments, got $helperExit" }
+
+          # Informational only: a runner may legitimately have no audio endpoint.
+          $volume = & artifacts/jarvis-windows-helper.exe volume get 2>&1 | Out-String
+          Write-Host "--- jarvis-windows-helper.exe volume get (informational) ---"
+          Write-Host "exit=$LASTEXITCODE output=$($volume.Trim())"
+
+          if ($failures.Count -gt 0) {
+            $failures | ForEach-Object { Write-Error $_ }
+            throw 'Launch check failed.'
+          }
+          Write-Host 'All three executables started and responded on Windows ARM64.'
+
+      - name: Write the job summary
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $report = Get-Content artifacts/BUILD_METADATA.json -Raw | ConvertFrom-Json
+          "## Windows ARM64 native tools"                                                          | Out-File $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          ""                                                                                       | Out-File $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          "- runner: ``windows-11-vs2026-arm`` ($($report.osArchitecture))"                         | Out-File $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          "- whisper.cpp: ``${{ steps.whisper.outputs.version }}`` (``${{ steps.whisper.outputs.commit }}``)" | Out-File $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          ""                                                                                       | Out-File $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          "| file | machine | format | size | sha256 |"                                             | Out-File $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          "| --- | --- | --- | ---: | --- |"                                                        | Out-File $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          foreach ($file in $report.files) {
+            "| $($file.name) | $($file.machine) | $($file.format) | $($file.size) | ``$($file.sha256)`` |" | Out-File $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          }
+          ""                                                                                       | Out-File $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          "Install into the JARVIS distribution with:"                                              | Out-File $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          '```'                                                                                    | Out-File $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          "node scripts/install-windows-arm64-tools.js --apply <downloaded folder>"                  | Out-File $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          '```'                                                                                    | Out-File $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+
+      - name: Upload the native tools
+        uses: actions/upload-artifact@v4
+        with:
+          name: jarvis-windows-arm64-native-tools
+          path: |
+            artifacts/whisper-cli.exe
+            artifacts/clap-vad.exe
+            artifacts/jarvis-windows-helper.exe
+            artifacts/BUILD_METADATA.json
+          if-no-files-found: error
+          retention-days: 30

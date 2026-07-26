@@ -1,0 +1,13 @@
+# Build output and fetched sources. Only the build inputs belong in this repository.
+artifacts/
+whisper.cpp/
+whisper-build/
+whisper-install/
+tools-build/
+build/windows-arm64/out/
+
+# Downloaded workflow artifacts
+*.exe
+BUILD_METADATA.json
+
+.DS_Store

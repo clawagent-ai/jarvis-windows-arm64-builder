@@ -1,0 +1,20 @@
+{
+  "_comment": "Build-only excerpt of the JARVIS whisper-manifest.json. It carries just the pinned whisper.cpp source so the workflow can read the same commit JARVIS was built against. No models, binaries or hashes of shipped files are included here.",
+  "_sourceOfTruth": "whisper-manifest.json in the JARVIS distribution",
+  "source": {
+    "repository": "https://github.com/ggml-org/whisper.cpp",
+    "version": "v1.8.6",
+    "commit": "23ee03506a91ac3d3f0071b40e66a430eebdfa1d"
+  },
+  "expectedOutputs": {
+    "format": "pe32+-aarch64",
+    "peMachine": "0xAA64",
+    "files": [
+      "whisper-cli.exe",
+      "clap-vad.exe",
+      "jarvis-windows-helper.exe"
+    ],
+    "installTo": "tools/win32-arm64/",
+    "runtimeLibraries": "static"
+  }
+}
