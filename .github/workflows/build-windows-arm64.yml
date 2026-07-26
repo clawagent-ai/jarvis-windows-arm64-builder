@@ -176,7 +176,8 @@ jobs:
           Write-Host "exit=$helperExit"
           if ($helperExit -ne 2) { $failures += "jarvis-windows-helper.exe should exit 2 without arguments, got $helperExit" }
 
-          # Informational only: a runner may legitimately have no audio endpoint.
+          # Informational only: a headless runner has no audio endpoint, so the helper
+          # returns 7 here. That must not fail the step.
           $volume = & artifacts/jarvis-windows-helper.exe volume get 2>&1 | Out-String
           Write-Host "--- jarvis-windows-helper.exe volume get (informational) ---"
           Write-Host "exit=$LASTEXITCODE output=$($volume.Trim())"
@@ -186,6 +187,9 @@ jobs:
             throw 'Launch check failed.'
           }
           Write-Host 'All three executables started and responded on Windows ARM64.'
+          # Explicit success: the informational command above leaves a non-zero
+          # $LASTEXITCODE, which the pwsh step would otherwise report as a failure.
+          exit 0
 
       - name: Write the job summary
         shell: pwsh
